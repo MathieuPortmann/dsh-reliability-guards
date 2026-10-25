@@ -74,7 +74,7 @@ Row `reliability-guards` in your profile's `cordis.patch.yml`. Every guard has a
 | Component | Supported |
 |---|---|
 | Node.js | `^22.19.0 \|\| >=24.0.0` (`engines.node`) |
-| DSH | `>=0.2.0-rc.2 <0.3.0`; declared as `peerDependencies` on `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-skill`, the only DSH packages the plugin imports |
+| DSH | `>=0.2.0-rc.2 <0.3.0`; declared as optional `peerDependencies` on `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-skill`, `@deepseek-ai/schemastery` (`>=3.18.0 <4.0.0`) and `zod` (`>=4.0.0 <5.0.0`), the packages the plugin loads from the DSH installation (`undici` is also tried, and skipped if absent) |
 | Platform | Linux (tested); the plugin itself is pure JavaScript with no native addon |
 
 Tested with DSH `0.2.0-rc.2` on Node 22.23 (see [Verification](#verification)).
