@@ -1,0 +1,5 @@
+# Every guard can be switched off in `config`; removing the bundle removes all of it.
+- insert:
+    - id: reliability-guards
+      name: 'dsh-reliability-guards'
+      config: {}

@@ -1,0 +1,35 @@
+{
+  "name": "dsh-reliability-guards",
+  "version": "0.1.0",
+  "description": "Reliability guards for small local models in DeepSeek Harness: in-turn correction of false success, invented DOIs, denied capabilities and cut answers; approval before destructive commands; /explain read-only mode.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Mathieu Portmann",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MathieuPortmann/dsh-reliability-guards.git"
+  },
+  "homepage": "https://github.com/MathieuPortmann/dsh-reliability-guards#readme",
+  "bugs": {
+    "url": "https://github.com/MathieuPortmann/dsh-reliability-guards/issues"
+  },
+  "keywords": ["dsh-plugin", "deepseek-harness", "agent", "guardrails", "reliability", "local-llm", "ollama"],
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\""
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["index.js", "client.js", "lib", "cordis.patch.yml", "skills", "SPEC.md", "README.md", "LICENSE"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-chat", "@deepseek-ai/dsh-client-locale"]
+    }
+  }
+}
