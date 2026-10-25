@@ -52,7 +52,7 @@ dsh plugin --profile web add dsh-reliability-guards
 dsh plugin --profile web add github:MathieuPortmann/dsh-reliability-guards
 ```
 
-Restart the profile afterwards. Requires Node >= 22.6 and DSH 0.2.x.
+Restart the profile afterwards. Requires Node `^22.19.0 || >=24` and DSH `>=0.2.0-rc.2 <0.3.0` (see [Compatibility](#compatibility)).
 
 ## Configuration
 
@@ -69,14 +69,48 @@ Row `reliability-guards` in your profile's `cordis.patch.yml`. Every guard has a
 | `explainAllow` | `[]` | extra tools allowed in `/explain` |
 | `llmBodyTimeoutMinutes` | 0 | raise the HTTP body timeout for slow local models (0 = Node default, 5 min) |
 
+## Compatibility
+
+| Component | Supported |
+|---|---|
+| Node.js | `^22.19.0 \|\| >=24.0.0` (`engines.node`) |
+| DSH | `>=0.2.0-rc.2 <0.3.0`; declared as `peerDependencies` on `@deepseek-ai/dsh-llm` and `@deepseek-ai/dsh-skill`, the only DSH packages the plugin imports |
+| Platform | Linux (tested); the plugin itself is pure JavaScript with no native addon |
+
+Tested with DSH `0.2.0-rc.2` on Node 22.23 (see [Verification](#verification)).
+
 ## Permissions and external services
 
-- No shell, no file writes.
-- Network: only DOI existence checks against `api.openalex.org` and `api.crossref.org`, and only when
-  an answer contains a DOI that no tool returned.
-- `frenchSpelling` runs the local `enchant-2` program (package `enchant-2` plus `hunspell-fr`); if it
-  is missing the check is skipped.
-- `llmBodyTimeoutMinutes` replaces the process-wide HTTP dispatcher while the plugin is loaded.
+Everything the plugin can touch, and what happens when it fails:
+
+| Capability | Where | Used for | If it fails |
+|---|---|---|---|
+| **Files (read only)** | `index.js` (`statSync`) | checks whether the target of `>` / `cp` / `mv` already exists, so only an overwrite asks for approval | treated as "does not exist": no approval card |
+| **Files (write)** | none | the plugin writes nothing; its state lives in the DSH session log | n/a |
+| **Network** | `lib/doi.js` (`fetch`) | existence check of a DOI that appears in an answer but in no tool result, against `api.openalex.org` then `api.crossref.org`; nothing else is sent | a network error or timeout (`doiTimeoutMs`) never counts as an invented DOI |
+| **Commands** | `lib/spell.js` (`execFile`) | `enchant-2 -d <dict> -l` with the answer's words on stdin; only when the `frenchSpelling` guard is switched on (off by default); no shell is involved and the arguments are fixed | program or dictionary missing, timeout (5 s): the check is skipped |
+| **Dynamic module loading** | `index.js` (`importFromDsh`) | loads `zod`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/schemastery`, `@deepseek-ai/dsh-skill` and, optionally, `undici` from the DSH installation that is running the plugin (a synchronous `require` of an ES module fails on Node 22). Nothing is downloaded and no code is evaluated from text (`eval` / `new Function` are not used) | `undici` is optional; the others are required and the plugin fails to load without them |
+| **Process-wide HTTP dispatcher** | `index.js` | only when `llmBodyTimeoutMinutes > 0` (default 0 = untouched): raises the body timeout of the global `fetch` for slow local models | n/a (opt-in) |
+
+The plugin also *blocks* actions: it asks for approval before destructive shell commands, refuses
+backups into `/tmp`, and in `/explain` mode refuses every tool outside an allow-list. It adds no
+tool of its own and runs no command on behalf of the model.
+
+## Verification
+
+Checked on a disposable profile (`DSH_HOME` pointing at a temporary folder, profile cloned with
+`dsh <name> --from-default-profile web`, so the real profile is never touched):
+
+```sh
+npm pack
+dsh plugin --profile t add file:$PWD/dsh-reliability-guards-0.1.0.tgz   # install
+dsh --profile t --no-open --port 3095                                    # start: plugin loads, no error
+dsh plugin --profile t remove dsh-reliability-guards                      # uninstall
+```
+
+`npm test` runs 33 standalone tests (rules, patterns, DOI extraction, spell check parsing, kept
+skills, load test of the real module) with no DSH installation needed except the load test, which
+skips when DSH is absent.
 
 ## Develop
 
