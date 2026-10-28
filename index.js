@@ -16,19 +16,27 @@
  *      and before overwriting an existing file; backups into /tmp are refused
  *      with the reason; with /explain on, every tool that changes something is
  *      refused (read-only conversation).
+ *      The answer checks (lib/answer-checks.js) look at the commands the answer
+ *      gives: code while the user waits, programs not installed, names no tool
+ *      showed, wrong dconf syntax, web sources denied. All findings of one stop
+ *      go back in ONE message, and what can be known before the answer is
+ *      written (the user's demands, the wait, Sources) is said while the model
+ *      works (a runtime context).
  *   3. User-invoked skills (/word, /science-writing...) survive the automatic
  *      summaries: their instructions are re-sent once a summary hid them.
  *
- * Constraints: no shell, no file writes, network only for DOI existence
+ * Constraints: no shell, no file writes. Files are only looked at: whether a
+ * program is in the PATH folders, whether a path named in an answer exists,
+ * whether a file would be overwritten. Network only for DOI existence
  * checks (OpenAlex, Crossref). The optional French spell check runs the local
  * `enchant-2` program (hunspell dictionaries, offline) without a shell; if it
  * is missing the check is skipped. Every registration is a Cordis effect, so
  * removing the bundle removes all of it.
  */
 import { createRequire } from 'node:module';
-import { realpathSync, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, resolve } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   DEFAULTS, STATE_VERSION, SOURCE_KIND, MODIFYING_TOOLS, USER_TEXT,
@@ -37,6 +45,7 @@ import {
 import { checkDoi } from './lib/doi.js';
 import { misspelledFrench } from './lib/spell.js';
 import { lostSkills, sessionEvents } from './lib/kept-skills.js';
+import { checkAnswer, checkNudgeText, checkSources, answerRules, groupedNudge, AUTHORED } from './lib/answer-checks.js';
 
 // Libraries shipped with dsh resolve from the dsh installation itself, imported
 // asynchronously (a synchronous require() of an ES module dsh is still loading
@@ -56,7 +65,7 @@ try { undici = await importFromDsh('undici'); } catch { /* optional: raising the
 const { isUserInvocable, renderSkillContent } = await importFromDsh('@deepseek-ai/dsh-skill');
 
 export const name = 'reliability-guards';
-export const inject = ['sessionProjections', 'tools', 'skills'];
+export const inject = ['sessionProjections', 'systemPrompt', 'tools', 'skills'];
 
 export const Config = Schema.object({
   falseSuccess: Schema.boolean().default(DEFAULTS.falseSuccess),
@@ -71,6 +80,12 @@ export const Config = Schema.object({
   spellAllow: Schema.array(String).default([]).description('Extra words the French spell check must accept (lower case).'),
   explainAllow: Schema.array(String).default([]).description('Extra tool names that stay available in /explain read-only mode.'),
   llmBodyTimeoutMinutes: Schema.number().min(0).default(0).description('Raise the HTTP body timeout for slow local models (0 keeps the Node default of 5 minutes).'),
+  codeWhileWaiting: Schema.boolean().default(true).description('The user asked to explain first and wait for their validation: an answer with code blocks is sent back.'),
+  unknownCommand: Schema.boolean().default(true).description('A program in a shell block of the answer that is not installed and appears in no tool result is sent back.'),
+  untestedCommand: Schema.boolean().default(true).description('Names (keys, schemas, paths, option values) in the commands of an answer must appear in a tool result, or be marked "# untested".'),
+  shellMistake: Schema.boolean().default(true).description('Wrong dconf syntax in the answer (a key ending with "/", a folder without it) is sent back.'),
+  sourcesDenied: Schema.boolean().default(true).description('After web pages were read, an answer that says it used no source is sent back.'),
+  answerRules: Schema.boolean().default(true).description('While the model works, tell it the rules its answer will be checked against (the user\'s explicit demands, the wait, Sources).'),
   destructiveAsk: Schema.boolean().default(DEFAULTS.destructiveAsk),
   tmpBackupDeny: Schema.boolean().default(DEFAULTS.tmpBackupDeny),
   explainMode: Schema.boolean().default(DEFAULTS.explainMode),
@@ -104,12 +119,53 @@ export function apply(ctx, rawConfig) {
     try { return ctx.sessionProjections.stateOf(session, KEY) ?? initState(); } catch { return initState(); }
   };
 
+  // Is a program installed (the PATH folders plus the usual system and user ones)? Cached per name.
+  const binDirs = [...new Set([...String(process.env.PATH ?? '').split(delimiter), '/usr/sbin', '/sbin', '/snap/bin', '/var/lib/flatpak/exports/bin',
+    join(homedir(), '.local', 'bin'), join(homedir(), '.cargo', 'bin')].filter(Boolean))];
+  const known = new Map();
+  const installed = name => {
+    if (!known.has(name)) known.set(name, binDirs.some(dir => { try { accessSync(join(dir, name), fsConstants.X_OK); return true; } catch { return false; } }));
+    return known.get(name);
+  };
+  const pathExists = p => { try { statSync(String(p).replace(/^~(?=\/|$)/, homedir())); return true; } catch { return false; } };
+
+  // What each conversation really saw: tool arguments and FULL tool results (the projection
+  // keeps only 800 characters of each). In memory only, the last ~400k characters per conversation.
+  const seen = new Map();
+  const SEEN_MAX = 400_000;
+  const remember = (session, text) => {
+    const id = session?.id; if (!id || !text) return;
+    const all = `${seen.get(id) ?? ''}\n${text}`;
+    seen.set(id, all.length > SEEN_MAX ? all.slice(-SEEN_MAX) : all);
+  };
+  ctx.on('tools/post-execute', async (exec, result, next) => {
+    try {
+      const text = Array.isArray(result?.content) ? result.content.map(c => (typeof c?.text === 'string' ? c.text : '')).join('\n') : String(result?.content ?? '');
+      remember(exec.agent?.session, `${AUTHORED.test(exec.name ?? '') ? '' : JSON.stringify(exec.arguments ?? {})}\n${text}`);
+    } catch { /* never block a tool */ }
+    return next();
+  });
+
   // --- 2. Correct before the turn closes -----------------------------------
+  // What can be known before the answer is written is said while the model works:
+  // every check after the answer costs a whole rewrite.
+  ctx.systemPrompt.context({
+    name: 'reliability-guards:answer-rules',
+    order: 119,
+    text: ({ agent } = {}) => {
+      if (!agent?.session || config.answerRules === false) return '';
+      try { const state = stateOf(agent.session); return answerRules(state.work, { waiting: state.waiting === true && config.codeWhileWaiting !== false }); } catch { return ''; }
+    },
+  });
+
   ctx.on('agent/turn-stopping', async ({ agent, signal }) => {
     const state = stateOf(agent.session);
     const w = state.work;
-    if (!w || w.nudgeCount >= config.maxNudgesPerTurn) return;
-    const findings = detect(w, state, config).filter(f => NUDGED.includes(f.code) && !w.nudges[f.code]);
+    if (!w) return;
+    // All findings go back in ONE message, so the model rewrites its answer once.
+    const texts = [];
+    const codes = [];
+    const findings = w.nudgeCount < config.maxNudgesPerTurn ? detect(w, state, config).filter(f => NUDGED.includes(f.code) && !w.nudges[f.code]) : [];
     for (const f of findings) {
       if (f.code === 'unverifiedDoi') {
         // The harness checks existence; a network failure is never reported as an invention.
@@ -118,17 +174,27 @@ export function apply(ctx, rawConfig) {
         f.data.lines = verdicts.map(([d, v]) => (v === 'notFound' ? `NOT FOUND: ${d}` : v === 'found' ? `exists (not read by you): ${d}` : `not checked (network): ${d}`));
       }
       const text = nudgeText(f);
-      if (!text) continue;
+      if (text) { texts.push(text); codes.push(f.code); }
+    }
+    // The answer checks have their own room of 2 more messages per turn.
+    if (w.nudgeCount < config.maxNudgesPerTurn + 2) {
+      const extra = [
+        ...checkAnswer(w, { waiting: state.waiting === true, exists: installed, seenText: seen.get(agent.session?.id) ?? '', pathExists, on: config }),
+        ...(config.sourcesDenied === false ? [] : checkSources(w)),
+      ].filter(f => !w.nudges[f.code]);
+      for (const f of extra) { texts.push(checkNudgeText(f)); codes.push(f.code); }
+    }
+    if (texts.length) {
       signal.throwIfAborted();
       agent.steer(createUserMessage({
-        content: [{ type: 'text', text }],
-        source: { kind: SOURCE_KIND, form: 'notice', summary: `${f.code} reliability check` },
+        content: [{ type: 'text', text: groupedNudge(texts) }],
+        source: { kind: SOURCE_KIND, form: 'notice', summary: `${codes.join('+')} reliability check` },
       }));
-      return; // one finding at a time; the next stop boundary looks again
+      return;
     }
     // Last, once per turn: the offline French spell check (its words travel in the nudge, so the
     // projection and the improvement center replay see the same verdict without re-running it).
-    if (config.frenchSpelling && !w.nudges.frenchSpelling && !findings.length) {
+    if (config.frenchSpelling && !w.nudges.frenchSpelling && !findings.length && w.nudgeCount < config.maxNudgesPerTurn) {
       const words = await misspelledFrench(spellCandidates(w, config), signal, config.spellAllow);
       if (!words.length) return;
       signal.throwIfAborted();

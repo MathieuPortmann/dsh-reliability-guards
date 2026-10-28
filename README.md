@@ -29,6 +29,21 @@ visible under the answer.
 
 Rules are bilingual (English and French phrasing).
 
+**Answer checks** (on the commands the answer gives the user):
+
+| Code | Detected when |
+|---|---|
+| `codeWhileWaiting` | you asked to explain first and wait for your validation ("wait for my approval", "attends ma validation"...), and the answer contains code; the wait lasts until you give the go-ahead ("go ahead", "je valide"...) |
+| `unknownCommand` | a command in a shell block is not installed on this computer, is not installed by the answer itself, and appears in no tool result (an invented tool presented as real) |
+| `untestedCommand` | after a turn with tools: a key, schema, path or option value in a command appears in no tool result of the conversation; lines marked `# untested` (or `# non testé`) pass |
+| `shellMistake` | wrong `dconf` syntax (a key ending with `/`, `dump`/`list` on a path without it) |
+| `sourcesDenied` | the model read web pages, then says it used no source or lists a "Sources" section without links |
+
+All findings of one stop go back to the model in **one** message, so it rewrites its answer once.
+And what can be known before the answer is written (the wait, your explicit demands such as
+"check the installed version", the Sources line, dconf syntax) is told to the model **while it
+works**, so most answers are right the first time.
+
 **Before a tool runs**
 - Approval card for destructive shell commands (`rm`, `mv`, `git reset --hard`, `git push --force`,
   `dd`, `>` onto an existing file, `cp` onto an existing file, ...) and for `write` over an existing
@@ -58,12 +73,13 @@ Restart the profile afterwards. Requires Node `^22.19.0 || >=24` and DSH `>=0.2.
 
 Row `reliability-guards` in your profile's `cordis.patch.yml`. Every guard has an on/off switch:
 `falseSuccess`, `actionWithoutTool`, `announcedOnly`, `deniedCapability`, `unverifiedDoi`,
-`cutAnswer`, `foreignScript`, `emoji`, `frenchSpelling`, `destructiveAsk`, `tmpBackupDeny`,
-`explainMode`, `keepInvokedSkills`.
+`cutAnswer`, `foreignScript`, `emoji`, `frenchSpelling`, `codeWhileWaiting`, `unknownCommand`,
+`untestedCommand`, `shellMistake`, `sourcesDenied`, `answerRules` (the rules told before the answer),
+`destructiveAsk`, `tmpBackupDeny`, `explainMode`, `keepInvokedSkills`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `maxNudgesPerTurn` | 2 | steering notices per turn |
+| `maxNudgesPerTurn` | 2 | steering notices per turn for the rules (the answer checks have 2 more) |
 | `doiTimeoutMs` | 15000 | timeout of each DOI existence check |
 | `spellAllow` | `[]` | extra words the spell check accepts |
 | `explainAllow` | `[]` | extra tools allowed in `/explain` |
@@ -77,7 +93,7 @@ Row `reliability-guards` in your profile's `cordis.patch.yml`. Every guard has a
 | DSH | `>=0.2.0-rc.2 <0.3.0`; declared as optional `peerDependencies` on `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-skill`, `@deepseek-ai/schemastery` (`>=3.18.0 <4.0.0`) and `zod` (`>=4.0.0 <5.0.0`), the packages the plugin loads from the DSH installation (`undici` is also tried, and skipped if absent) |
 | Platform | Linux (tested); the plugin itself is pure JavaScript with no native addon |
 
-Tested with DSH `0.2.0-rc.2` on Node 22.23 (see [Verification](#verification)).
+Tested with DSH `0.2.0-rc.2` and `0.2.1-rc.2` on Node 22.23 (see [Verification](#verification)).
 
 ## Permissions and external services
 
@@ -86,9 +102,12 @@ Everything the plugin can touch, and what happens when it fails:
 | Capability | Where | Used for | If it fails |
 |---|---|---|---|
 | **Files (read only)** | `index.js` (`statSync`) | checks whether the target of `>` / `cp` / `mv` already exists, so only an overwrite asks for approval | treated as "does not exist": no approval card |
+| **Files (read only)** | `index.js` (`accessSync`, `statSync`) | answer checks: whether a program named in an answer is installed (executable in a `PATH` folder, or in `/usr/sbin`, `/sbin`, `/snap/bin`, `/var/lib/flatpak/exports/bin`, `~/.local/bin`, `~/.cargo/bin`), and whether a file path named in a command of the answer exists. Only existence is checked; no file is opened or read | treated as "not installed" / "does not exist": the model is asked to check it |
+| **Memory** | `index.js` | answer checks: the tool arguments and full tool results of each conversation (last ~400k characters), so a name in an answer can be compared with what the tools really showed. In memory only, never written to disk, gone when DSH stops | n/a |
 | **Files (write)** | none | the plugin writes nothing; its state lives in the DSH session log | n/a |
 | **Network** | `lib/doi.js` (`fetch`) | existence check of a DOI that appears in an answer but in no tool result, against `api.openalex.org` then `api.crossref.org`; nothing else is sent | a network error or timeout (`doiTimeoutMs`) never counts as an invented DOI |
 | **Commands** | `lib/spell.js` (`execFile`) | `enchant-2 -d <dict> -l` with the answer's words on stdin; only when the `frenchSpelling` guard is switched on (off by default); no shell is involved and the arguments are fixed | program or dictionary missing, timeout (5 s): the check is skipped |
+| **Model context** | `index.js` (`systemPrompt.context`) | adds a short "rules for your answer" text while the model works (the wait, your explicit demands, Sources, dconf syntax); switch off with `answerRules: false` | n/a |
 | **Dynamic module loading** | `index.js` (`importFromDsh`) | loads `zod`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/schemastery`, `@deepseek-ai/dsh-skill` and, optionally, `undici` from the DSH installation that is running the plugin (a synchronous `require` of an ES module fails on Node 22). Nothing is downloaded and no code is evaluated from text (`eval` / `new Function` are not used) | `undici` is optional; the others are required and the plugin fails to load without them |
 | **Process-wide HTTP dispatcher** | `index.js` | only when `llmBodyTimeoutMinutes > 0` (default 0 = untouched): raises the body timeout of the global `fetch` for slow local models | n/a (opt-in) |
 
@@ -103,13 +122,13 @@ Checked on a disposable profile (`DSH_HOME` pointing at a temporary folder, prof
 
 ```sh
 npm pack
-dsh plugin --profile t add file:$PWD/dsh-reliability-guards-0.1.0.tgz   # install
+dsh plugin --profile t add file:$PWD/dsh-reliability-guards-0.1.1.tgz   # install
 dsh --profile t --no-open --port 3095                                    # start: plugin loads, no error
 dsh plugin --profile t remove dsh-reliability-guards                      # uninstall
 ```
 
-`npm test` runs 33 standalone tests (rules, patterns, DOI extraction, spell check parsing, kept
-skills, load test of the real module) with no DSH installation needed except the load test, which
+`npm test` runs 49 standalone tests (rules, patterns, answer checks, DOI extraction, spell check
+parsing, kept skills, load test of the real module) with no DSH installation needed except the load test, which
 skips when DSH is absent.
 
 ## Develop

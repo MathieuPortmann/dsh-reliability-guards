@@ -25,6 +25,11 @@ window.__ModuleLoader__.load({
       'code.frenchSpelling': 'Possible French spelling mistakes: {detail}',
       'code.cutAnswer': 'The answer seemed cut off.',
       'code.markupLeak': 'The answer contained a tool call written as text (nothing was executed).',
+      'code.codeWhileWaiting': 'The answer contained code although you asked to explain first and wait.',
+      'code.unknownCommand': 'The answer gave commands that are not installed and that no tool showed.',
+      'code.untestedCommand': 'The answer’s commands used names that no tool result showed.',
+      'code.shellMistake': 'The answer’s commands had a syntax mistake.',
+      'code.sourcesDenied': 'The answer said it used no source although web pages were read.',
       'explain.on': 'Explain mode: read-only (type /explain off to allow changes)',
     };
     const fr = {
@@ -42,6 +47,11 @@ window.__ModuleLoader__.load({
       'code.frenchSpelling': 'Fautes d’orthographe possibles : {detail}',
       'code.cutAnswer': 'La réponse semblait coupée.',
       'code.markupLeak': 'La réponse contenait un appel d’outil écrit en texte (rien n’a été exécuté).',
+      'code.codeWhileWaiting': 'La réponse contenait du code alors que tu demandais d’expliquer d’abord et d’attendre.',
+      'code.unknownCommand': 'La réponse donnait des commandes non installées qu’aucun outil n’a montrées.',
+      'code.untestedCommand': 'Les commandes de la réponse utilisaient des noms qu’aucun résultat d’outil n’a montrés.',
+      'code.shellMistake': 'Les commandes de la réponse contenaient une erreur de syntaxe.',
+      'code.sourcesDenied': 'La réponse disait n’utiliser aucune source alors que des pages web avaient été lues.',
       'explain.on': 'Mode explication : lecture seule (tape /explain off pour autoriser les modifications)',
     };
 

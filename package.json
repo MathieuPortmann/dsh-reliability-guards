@@ -1,7 +1,7 @@
 {
   "name": "dsh-reliability-guards",
-  "version": "0.1.0",
-  "description": "Reliability guards for small local models in DeepSeek Harness: in-turn correction of false success, invented DOIs, denied capabilities and cut answers; approval before destructive commands; /explain read-only mode.",
+  "version": "0.1.1",
+  "description": "Reliability guards for small local models in DeepSeek Harness: in-turn correction of false success, invented DOIs and commands, denied capabilities and cut answers; approval before destructive commands; /explain read-only mode.",
   "type": "module",
   "license": "MIT",
   "author": "Mathieu Portmann",

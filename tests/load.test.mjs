@@ -16,9 +16,10 @@ const { initState, applyEvent } = await import('../lib/rules.js');
 const dir = mkdtempSync(join(tmpdir(), 'rg-'));
 writeFileSync(join(dir, 'existing.md'), 'x');
 let state = { ...initState(), cwd: dir };
-const reg = { projections: [], listeners: {} };
+const reg = { projections: [], contexts: [], listeners: {} };
 const ctx = {
   sessionProjections: { register: d => { reg.projections.push(d); return () => {}; }, stateOf: () => state },
+  systemPrompt: { context: c => { reg.contexts.push(c); return () => {}; } },
   tools: { register: () => () => {} },
   on: (name, fn) => { (reg.listeners[name] ??= []).push(fn); return () => {}; },
 };
@@ -64,4 +65,29 @@ const d6 = await pre({ agent, name: 'bash', arguments: { command: 'ls' } }, next
 assert.equal(d6.kind, 'deny'); assert.match(d6.reason, /Explain mode/);
 const d7 = await pre({ agent, name: 'read', arguments: { file_path: 'x' } }, next);
 assert.equal(d7.kind, 'accept');
+
+// Answer checks: the wait is said before the answer, findings go back in one grouped message.
+fold([ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '/explain off' }] }),
+  ev('turn/start', { turn: 2 }),
+  ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'Explain your approach and wait for my approval.' }] })]);
+const rules = reg.contexts.find(c => c.name === 'reliability-guards:answer-rules');
+assert.match(rules.text({ agent }), /no code block/);
+fold([ev('assistant/message', { message: { content: [{ type: 'text', text: 'Step 1:\n```bash\nzz-invented-tool --apply\n```' }] } })]);
+await reg.listeners['agent/turn-stopping'][0]({ agent, turn: 2, signal: new AbortController().signal });
+assert.equal(steered.length, 2);
+assert.equal(steered[1].source.summary, 'codeWhileWaiting reliability check');
+fold([ev('user/message', { source: steered[1].source, content: steered[1].content }),
+  ev('turn/end', {}),
+  ev('turn/start', { turn: 3 }),
+  ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'Go ahead.' }] }),
+  ev('tool/call', { callId: 'b', name: 'web_read', arguments: '{"url":"https://example.org/page"}' }),
+  ev('tool/result', { message: { toolCallId: 'b', content: [{ type: 'text', text: 'Page text' }] } }),
+  ev('assistant/message', { message: { content: [{ type: 'text', text: 'Run:\n```bash\nzz-invented-tool --apply\n```\nNo external sources were used.' }] } })]);
+assert.equal(state.waiting, false);
+await reg.listeners['agent/turn-stopping'][0]({ agent, turn: 3, signal: new AbortController().signal });
+assert.equal(steered.length, 3);
+assert.equal(steered[2].source.summary, 'unknownCommand+sourcesDenied reliability check');
+assert.match(steered[2].content[0].text, /found 2 problems[\s\S]*zz-invented-tool[\s\S]*example\.org/);
+fold([ev('user/message', { source: steered[2].source, content: steered[2].content })]);
+assert.equal(state.work.nudges.unknownCommand && state.work.nudges.sourcesDenied, true);
 console.log('load test ok');

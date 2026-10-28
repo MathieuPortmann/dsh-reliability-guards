@@ -14,8 +14,26 @@ about to close, on the session projection, so the same verdict is reached live a
 | markupLeak | D3/E4 | `<tool_call>`, `<function=…>`, `</think>`, ```` ```shell mcp__… ```` in the answer | nudge (call the tool for real or rewrite) |
 | cutAnswer | E1/D4 | ≥200 chars ending on ':' ',' a word, or an unclosed code block | nudge (do the announced action, or continue) |
 
-- At most `maxNudgesPerTurn` (2) nudges per turn, at most one per code; nudges are
+Answer checks (`lib/answer-checks.js` `checkAnswer`, `checkSources`), on the commands the answer gives:
+
+| Code | Detected when | Reaction |
+|---|---|---|
+| codeWhileWaiting | the user asked to explain first / wait for their validation (French or English; the wait lasts until a go-ahead such as "je valide", "go ahead") and the answer has code blocks | nudge: words only |
+| unknownCommand | a program starting a command of a shell block (or of an inline `` `cmd --option` ``) is not in the PATH folders, is not installed by the answer itself (apt, flatpak, pip…) and appears in no tool argument/result of the turn | nudge: check it or mark it "(untested)" |
+| untestedCommand | only after a turn with tools: a name with `- _ . /` in a command (key, schema, path, option value) appears in no tool argument or full tool result of the conversation and is not an existing path; lines marked `# untested` / `# non testé` and install lines pass; the model's own writing (`*_propose`, `write`, `edit`, `step_done`…) is no evidence | nudge: check with a read-only command |
+| shellMistake | `dconf read/write/reset` on a path ending with `/`, `dconf dump/list` on a path without it | nudge with the right form |
+| sourcesDenied | the model read web pages (`web_read`, `web_search`, `web_fetch`) and the answer says it used no source, or has a "Sources" heading without any link | nudge with the URLs read |
+
+- At most `maxNudgesPerTurn` (2) messages per turn for the rules, 2 more for the answer checks, at
+  most one per code. All findings of one stop go back in ONE message (`groupedNudge`, summary
+  `code1+code2 reliability check`), so the model rewrites its answer once. Messages are
   user-role notices with `source.kind = 'reliability-guard'` (durable, replayable).
+- Before the answer (runtime context `reliability-guards:answer-rules`): the wait, the user's
+  explicit demands (sentences with "check", "make sure", "only", "vérifie", "il faut"…), the
+  Sources line when pages were read, dconf syntax when dconf is involved, and "names come from tool
+  results". What can be said before costs no rewrite after.
+- A failed shell call that only looks programs up (`which`, `type`, `command -v`, `compgen`…) is
+  not a task step for `falseSuccess`.
 - `turn/end` records per turn: `corrected` (nudged, gone), `warned` (nudged, still there),
   `detected` (not nudged: e.g. a real but unread DOI). The client shows them under the answer.
 
@@ -37,10 +55,12 @@ back. At `agent/pre-step` the instructions of the (at most 4) lost skills are re
 `skill` call for one of them returns the instructions instead of a refusal.
 
 ## Constraints
-No shell, no file writes, no dependency. Network: only OpenAlex/Crossref DOI existence checks, and
+No shell, no file writes, no dependency. File system: read-only looks (is a program in the PATH
+folders, does a path named in an answer exist, would a write overwrite a file). Full tool results
+are kept in memory only (last ~400k characters per conversation) for `untestedCommand`. Network: only OpenAlex/Crossref DOI existence checks, and
 only when an answer contains a DOI absent from every tool result. Every guard has a Config switch;
 removing the bundle removes everything (Cordis effects).
 
 ## Tests
-`npm test` (Node >= 22.6): the pure rules on synthetic events, the /explain allow-list, the
+`npm test` (Node >= 22.6): the pure rules on synthetic events, the answer checks, the /explain allow-list, the
 kept-skills logic and a load test with a fake context (skipped when the `dsh` CLI is not installed).
